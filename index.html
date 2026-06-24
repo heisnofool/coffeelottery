@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>룰렛 음료 내기!</title>
+  <title>실시간 룰렛 음료 내기!</title>
   <!-- Google Fonts 구글 폰트 적용 -->
   <link href="https://fonts.googleapis.com/css2?family=Gamja+Flower&family=Noto+Sans+KR:wght@400;700;900&display=swap" rel="stylesheet">
   <style>
@@ -325,7 +325,7 @@
 
   <div class="app-container">
     
-    <!-- 1. 헤더 (배경 이미지 및 웰컴 메시지) -->
+    <!-- 1. 헤더 -->
     <div class="hero-header">
       <h1>음료를 주문해주세요.<br>룰렛 당첨자가 쏩니다! ☕️</h1>
       <p>오늘의 행운아(피해자)는 누구?</p>
@@ -356,6 +356,8 @@
         <label>📋 등록된 메뉴 목록 (가격 수정 가능)</label>
         <div id="adminMenuList"></div>
       </div>
+      
+      <button class="btn btn-secondary" onclick="resetAllData()" style="background:#ff4757; margin-top:10px;">데이터 전체 초기화 🧹</button>
     </div>
 
     <!-- 주문 마감 시간 표시기 -->
@@ -388,14 +390,13 @@
         </select>
       </div>
 
-      <!-- 수정모드 대응을 위한 버튼 구조 변경 -->
       <div style="display: flex; gap: 8px;">
         <button class="btn" id="submitBtn" onclick="submitOrder()" style="flex: 1;">주문 추가하기 🥳</button>
         <button class="btn" id="cancelEditBtn" onclick="cancelEdit()" style="display: none; background: #a4b0be; box-shadow: 0 5px 10px rgba(164,176,190,0.3); width: 80px;">취소</button>
       </div>
     </div>
 
-    <!-- 6. 주문 현황 및 취합 테이블 (수정/삭제 액션 컬럼 추가) -->
+    <!-- 6. 주문 현황 및 취합 테이블 -->
     <div class="section">
       <div class="section-title">📊 실시간 주문 현황</div>
       <div class="table-container">
@@ -455,34 +456,117 @@
   <!-- 폭죽용 캔버스 -->
   <canvas id="confettiCanvas"></canvas>
 
-  <script>
-    // --- 1. 초기 데이터 설정 ---
-    let menus = [
-      { id: 1, name: "아이스 아메리카노", price: 4500 },
-      { id: 2, name: "아이스 라떼", price: 5000 },
-      { id: 3, name: "따뜻한 아메리카노", price: 4000 },
-      { id: 4, name: "따뜻한 라떼", price: 4500 }
-    ];
+  <!-- Firebase 및 앱 로직 스크립트 -->
+  <script type="module">
+    // Firebase SDK CDN 가져오기 (v10)
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+    import { getDatabase, ref, set, push, onValue, update, remove } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
 
+    // ----------------- [ 중요! 여기에 복사한 Firebase 설정을 붙여넣으세요 ] -----------------
+    const firebaseConfig = {
+      apiKey: "AIzaSyBExGF7F33BWyeH3g8D-KUhCdPS2o7gaA4",
+      authDomain: "coffee-lottery-36117.firebaseapp.com",
+      databaseURL: "https://coffee-lottery-36117-default-rtdb.asia-southeast1.firebasedatabase.app",
+      projectId: "coffee-lottery-36117",
+      storageBucket: "coffee-lottery-36117.firebasestorage.app",
+      messagingSenderId: "347979859384",
+      appId: "1:347979859384:web:49a2d33a2e8cd22b12bb4d"
+    };
+    // ----------------------------------------------------------------------------------
+
+    // Firebase 초기화
+    const app = initializeApp(firebaseConfig);
+    const db = getDatabase(app);
+
+    // --- 앱 상태 전역 변수 ---
+    let menus = [];
     let orders = [];
-    let deadline = null;
+    let deadlineStr = null;
     let timerInterval = null;
-    let editingOrderId = null; // 수정 중인 주문 ID를 추적하기 위한 변수
+    let editingOrderId = null; 
+    let isSpinning = false;
+    let currentAngle = 0;
+    let totalAmountPay = 0;
 
-    // --- 2. 초기 로드 및 UI 랜더링 ---
-    window.onload = function() {
+    const colors = ["#ff7b93", "#ffbe0b", "#ff006e", "#8338ec", "#3a86ff", "#06d6a0", "#118ab2", "#ffd166"];
+    const defaultParticipants = ["김대리", "이과장", "박부장", "최사원"];
+
+    const canvas = document.getElementById('rouletteCanvas');
+    const ctx = canvas.getContext('2d');
+
+    // --- 데이터 실시간 동기화 (Firebase -> Client) ---
+
+    // 1. 메뉴 목록 실시간 감지 및 최초 초기화
+    const menusRef = ref(db, 'menus');
+    onValue(menusRef, (snapshot) => {
+      const data = snapshot.val();
+      if (!data) {
+        // DB에 메뉴 데이터가 아예 없을 때 디폴트 데이터 주입
+        const defaultMenus = {
+          1: { id: 1, name: "아이스 아메리카노", price: 4500 },
+          2: { id: 2, name: "아이스 라떼", price: 5000 },
+          3: { id: 3, name: "따뜻한 아메리카노", price: 4000 },
+          4: { id: 4, name: "따뜻한 라떼", price: 4500 }
+        };
+        set(menusRef, defaultMenus);
+        menus = Object.values(defaultMenus);
+      } else {
+        menus = Object.values(data);
+      }
       renderMenuOptions();
       renderAdminMenuList();
+      renderOrders(); 
+    });
+
+    // 2. 주문 내역 실시간 감지
+    const ordersRef = ref(db, 'orders');
+    onValue(ordersRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        orders = Object.keys(data).map(key => ({ id: key, ...data[key] }));
+      } else {
+        orders = [];
+      }
       renderOrders();
       drawRouletteWheel();
-    };
+    });
+
+    // 3. 마감 시간 실시간 감지
+    const deadlineRef = ref(db, 'deadline');
+    onValue(deadlineRef, (snapshot) => {
+      deadlineStr = snapshot.val();
+      if (deadlineStr) {
+        document.getElementById('deadlineTime').value = deadlineStr;
+        startTimer();
+      } else {
+        document.getElementById('deadlineTime').value = '';
+        document.getElementById('timerDisplay').innerHTML = "⏳ 주문 진행 중... 원하시는 음료를 담아주세요!";
+        document.getElementById('timerDisplay').style.background = "#fff";
+        document.getElementById('timerDisplay').style.color = "var(--primary-color)";
+        if(timerInterval) clearInterval(timerInterval);
+      }
+    });
+
+    // 4. 실시간 룰렛 결과 감지 (다른 사용자가 돌려도 당첨 모달이 뜨게 하고 싶다면 활성화)
+    const winnerRef = ref(db, 'winnerResult');
+    onValue(winnerRef, (snapshot) => {
+      const winnerData = snapshot.val();
+      if (winnerData && winnerData.showPopup) {
+        // 이미 본인 화면에서 룰렛을 돌리고 있는 상황이 아닐 때만 팝업 노출
+        if (!isSpinning) {
+          showWinner(winnerData.name, winnerData.totalPay);
+        }
+      }
+    });
+
+
+    // --- UI 랜더링 함수들 ---
 
     function toggleAdminPanel() {
       const panel = document.getElementById('adminPanel');
       panel.style.display = panel.style.display === 'block' ? 'none' : 'block';
     }
 
-    // 주문자용 음료 셀렉트 박스 갱신
     function renderMenuOptions() {
       const select = document.getElementById('drinkSelect');
       select.innerHTML = '';
@@ -494,11 +578,10 @@
       });
     }
 
-    // 관리자 메뉴 목록 갱신
     function renderAdminMenuList() {
       const container = document.getElementById('adminMenuList');
       container.innerHTML = '';
-      menus.forEach((menu, index) => {
+      menus.forEach((menu) => {
         const div = document.createElement('div');
         div.className = 'menu-item-row';
         div.innerHTML = `
@@ -510,7 +593,43 @@
       });
     }
 
-    // --- 3. 메뉴 수정/추가/삭제 로직 ---
+    function renderOrders() {
+      const tbody = document.getElementById('orderTableBody');
+      tbody.innerHTML = '';
+
+      let totalQty = 0;
+      let totalAmt = 0;
+
+      orders.forEach(order => {
+        const menu = menus.find(m => m.id === parseInt(order.drinkId)) || { name: '삭제된 메뉴', price: 0 };
+        const sumPrice = menu.price * order.qty;
+
+        totalQty += order.qty;
+        totalAmt += sumPrice;
+
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td><strong>${order.name}</strong></td>
+          <td>${menu.name}</td>
+          <td>${menu.price.toLocaleString()}원</td>
+          <td>${order.qty}</td>
+          <td><strong>${sumPrice.toLocaleString()}원</strong></td>
+          <td>
+            <button class="action-btn" onclick="startEditOrder('${order.id}')" title="수정">✏️</button>
+            <button class="action-btn" onclick="deleteOrder('${order.id}')" title="삭제">❌</button>
+          </td>
+        `;
+        tbody.appendChild(tr);
+      });
+
+      document.getElementById('totalQty').textContent = totalQty;
+      document.getElementById('totalAmount').textContent = totalAmt.toLocaleString() + '원';
+      totalAmountPay = totalAmt;
+    }
+
+
+    // --- 메뉴 관리 DB 전송 함수 ---
+
     function addNewMenu() {
       const nameInput = document.getElementById('newMenuName');
       const priceInput = document.getElementById('newMenuPrice');
@@ -523,55 +642,49 @@
       }
 
       const newId = menus.length > 0 ? Math.max(...menus.map(m => m.id)) + 1 : 1;
-      menus.push({ id: newId, name, price });
+      set(ref(db, `menus/${newId}`), { id: newId, name, price });
+
       nameInput.value = '';
       priceInput.value = '';
-      
-      renderMenuOptions();
-      renderAdminMenuList();
     }
 
     function updateMenuName(id, newName) {
-      const menu = menus.find(m => m.id === id);
-      if(menu) menu.name = newName;
-      renderMenuOptions();
+      update(ref(db, `menus/${id}`), { name: newName });
     }
 
     function updateMenuPrice(id, newPrice) {
-      const menu = menus.find(m => m.id === id);
-      if(menu) menu.price = parseInt(newPrice) || 0;
-      renderMenuOptions();
-      renderOrders(); // 주문 내역 금액도 자동 갱신
+      const price = parseInt(newPrice) || 0;
+      update(ref(db, `menus/${id}`), { price: price });
     }
 
     function deleteMenu(id) {
-      menus = menus.filter(m => m.id !== id);
-      renderMenuOptions();
-      renderAdminMenuList();
+      remove(ref(db, `menus/${id}`));
     }
 
-    // --- 4. 마감 시간 설정 및 타이머 ---
+
+    // --- 마감 시간 처리 ---
+
     function setDeadline() {
       const timeVal = document.getElementById('deadlineTime').value;
-      if(!timeVal) return;
+      set(ref(db, 'deadline'), timeVal);
+    }
 
-      const now = new Date();
-      const [hours, minutes] = timeVal.split(':');
-      deadline = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hours, minutes, 0);
-
-      if (deadline < now) {
-        deadline.setDate(deadline.getDate() + 1); // 이미 지난 시간이면 내일로 설정
-      }
-
+    function startTimer() {
       if(timerInterval) clearInterval(timerInterval);
-      
       timerInterval = setInterval(updateTimer, 1000);
       updateTimer();
     }
 
     function updateTimer() {
-      if(!deadline) return;
+      if(!deadlineStr) return;
       const now = new Date();
+      const [hours, minutes] = deadlineStr.split(':');
+      const deadline = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hours, minutes, 0);
+
+      if (deadline < now) {
+        deadline.setDate(deadline.getDate() + 1); // 시간 지나면 내일로 세팅
+      }
+
       const diff = deadline - now;
       const display = document.getElementById('timerDisplay');
 
@@ -590,12 +703,19 @@
       display.style.color = "#f59f00";
     }
 
-    // --- 5. 주문 등록 및 요약 테이블 처리 ---
+
+    // --- 주문 등록 및 수정/삭제 DB 반영 ---
+
     function submitOrder() {
       // 마감 체크
-      if (deadline && new Date() > deadline) {
-        alert("주문이 이미 마감되었습니다!");
-        return;
+      if (deadlineStr) {
+        const now = new Date();
+        const [hours, minutes] = deadlineStr.split(':');
+        const deadline = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hours, minutes, 0);
+        if (now > deadline) {
+          alert("주문이 이미 마감되었습니다!");
+          return;
+        }
       }
 
       const nameInput = document.getElementById('ordererName');
@@ -611,69 +731,58 @@
         return;
       }
 
-      const menu = menus.find(m => m.id === menuId);
-      if(!menu) return;
-
       if (editingOrderId !== null) {
-        // [수정 모드] 기존 주문 데이터 변경
-        const orderIndex = orders.findIndex(o => o.id === editingOrderId);
-        if (orderIndex !== -1) {
-          orders[orderIndex].name = name;
-          orders[orderIndex].drinkId = menuId;
-          orders[orderIndex].qty = qty;
-        }
-        cancelEdit(); // 입력폼 초기화 및 일반 모드로 복구
+        // [수정 모드] 기존 DB 데이터 업데이트
+        update(ref(db, `orders/${editingOrderId}`), {
+          name: name,
+          drinkId: menuId,
+          qty: qty
+        });
+        cancelEdit();
       } else {
-        // [추가 모드] 동일인 중복 주문 시 누적합산, 신규는 푸시
+        // [추가 모드] 동일 주문자+동일 음료가 있다면 합산, 아니면 새로 push
         const existingOrder = orders.find(o => o.name === name && o.drinkId === menuId);
         if(existingOrder) {
-          existingOrder.qty += qty;
+          update(ref(db, `orders/${existingOrder.id}`), {
+            qty: existingOrder.qty + qty
+          });
         } else {
-          orders.push({
-            id: Date.now(),
+          const newOrderRef = push(ref(db, 'orders'));
+          set(newOrderRef, {
             name,
-            drinkId: menu.id,
-            qty: qty
+            drinkId: menuId,
+            qty
           });
         }
       }
 
       nameInput.value = '';
-      renderOrders();
-      drawRouletteWheel(); // 룰렛 대상 업데이트
     }
 
-    // --- 5-1. 주문 수정/삭제 동작 함수 ---
     function startEditOrder(id) {
       const order = orders.find(o => o.id === id);
       if(!order) return;
 
       editingOrderId = id;
 
-      // 1. 입력 폼에 기존 정보 세팅
       document.getElementById('ordererName').value = order.name;
       document.getElementById('drinkSelect').value = order.drinkId;
       document.getElementById('drinkQty').value = order.qty;
 
-      // 2. UI 스타일을 수정모드로 전환
       document.getElementById('formTitle').textContent = "✏️ 주문 수정하기";
       document.getElementById('submitBtn').textContent = "주문 수정 완료 💾";
       document.getElementById('submitBtn').style.background = "var(--edit-color)";
       document.getElementById('cancelEditBtn').style.display = "block";
 
-      // 3. 입력창으로 부드럽게 스크롤 이동
       document.getElementById('orderFormSection').scrollIntoView({ behavior: 'smooth' });
     }
 
     function cancelEdit() {
       editingOrderId = null;
-
-      // 1. 입력 폼 초기화
       document.getElementById('ordererName').value = '';
       document.getElementById('drinkSelect').selectedIndex = 0;
       document.getElementById('drinkQty').value = '1';
 
-      // 2. UI 스타일 복구
       document.getElementById('formTitle').textContent = "✏️ 음료 주문하기";
       document.getElementById('submitBtn').textContent = "주문 추가하기 🥳";
       document.getElementById('submitBtn').style.background = "var(--primary-color)";
@@ -682,69 +791,30 @@
 
     function deleteOrder(id) {
       if(confirm("해당 주문을 삭제하시겠습니까?")) {
-        orders = orders.filter(o => o.id !== id);
-        // 만약 삭제하려는 대상을 수정하고 있던 중이었다면 수정모드 취소
+        remove(ref(db, `orders/${id}`));
         if (editingOrderId === id) {
           cancelEdit();
         }
-        renderOrders();
-        drawRouletteWheel();
       }
     }
 
-    // 주문 리스트 테이블 렌더링
-    function renderOrders() {
-      const tbody = document.getElementById('orderTableBody');
-      tbody.innerHTML = '';
-
-      let totalQty = 0;
-      let totalAmt = 0;
-
-      orders.forEach(order => {
-        const menu = menus.find(m => m.id === order.drinkId) || { name: '삭제된 메뉴', price: 0 };
-        const sumPrice = menu.price * order.qty;
-
-        totalQty += order.qty;
-        totalAmt += sumPrice;
-
-        const tr = document.createElement('tr');
-        tr.innerHTML = `
-          <td><strong>${order.name}</strong></td>
-          <td>${menu.name}</td>
-          <td>${menu.price.toLocaleString()}원</td>
-          <td>${order.qty}</td>
-          <td><strong>${sumPrice.toLocaleString()}원</strong></td>
-          <td>
-            <button class="action-btn" onclick="startEditOrder(${order.id})" title="수정">✏️</button>
-            <button class="action-btn" onclick="deleteOrder(${order.id})" title="삭제">❌</button>
-          </td>
-        `;
-        tbody.appendChild(tr);
-      });
-
-      document.getElementById('totalQty').textContent = totalQty;
-      document.getElementById('totalAmount').textContent = totalAmt.toLocaleString() + '원';
-      
-      // 전역 총합 변수로 저장 (팝업 노출용)
-      window.totalAmountPay = totalAmt;
+    // 전체 초기화 (새 게임 시작 시)
+    function resetAllData() {
+      if(confirm("모든 주문, 마감 시간, 당첨 결과를 초기화하시겠습니까?")) {
+        remove(ref(db, 'orders'));
+        remove(ref(db, 'deadline'));
+        remove(ref(db, 'winnerResult'));
+        alert("데이터가 깨끗하게 비워졌습니다!");
+      }
     }
 
-    // --- 6. 룰렛 정밀 드로잉 및 회전 로직 (바늘-당첨자 100% 매칭) ---
-    const canvas = document.getElementById('rouletteCanvas');
-    const ctx = canvas.getContext('2d');
-    let currentAngle = 0; 
-    let isSpinning = false;
 
-    // 디폴트 룰렛 참가자 (주문이 없을 경우 표시)
-    const defaultParticipants = ["김대리", "이과장", "박부장", "최사원"];
+    // --- 룰렛 그리기 및 추첨 (바늘 타겟팅 수학적 정밀 계산) ---
 
     function getParticipants() {
-      // 주문 목록에서 고유한 주문자 이름 추출
       const uniqueNames = [...new Set(orders.map(o => o.name))];
       return uniqueNames.length > 0 ? uniqueNames : defaultParticipants;
     }
-
-    const colors = ["#ff7b93", "#ffbe0b", "#ff006e", "#8338ec", "#3a86ff", "#06d6a0", "#118ab2", "#ffd166"];
 
     function drawRouletteWheel() {
       const members = getParticipants();
@@ -754,7 +824,6 @@
 
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      // 원판 베이스 그리기
       ctx.save();
       ctx.translate(radius, radius);
       ctx.rotate(currentAngle);
@@ -763,7 +832,6 @@
         const startAng = i * anglePerSegment;
         const endAng = startAng + anglePerSegment;
 
-        // 부채꼴 조각 그리기
         ctx.beginPath();
         ctx.moveTo(0, 0);
         ctx.arc(0, 0, radius - 10, startAng, endAng);
@@ -774,7 +842,6 @@
         ctx.lineWidth = 3;
         ctx.stroke();
 
-        // 텍스트 그리기 (가독성 높은 두꺼운 폰트)
         ctx.save();
         ctx.rotate(startAng + anglePerSegment / 2);
         ctx.textAlign = "right";
@@ -788,7 +855,6 @@
       }
       ctx.restore();
 
-      // 테두리 링 데코레이션
       ctx.beginPath();
       ctx.arc(radius, radius, radius - 5, 0, 2 * Math.PI);
       ctx.strokeStyle = '#ffd1d9';
@@ -803,29 +869,25 @@
         return;
       }
 
+      // 시작 시 이전 팝업 데이터 초기화
+      set(ref(db, 'winnerResult'), null);
+
       const members = getParticipants();
       const numSegments = members.length;
       
-      // 1. 당첨자 랜덤 선정
       const winnerIndex = Math.floor(Math.random() * numSegments);
       const winnerName = members[winnerIndex];
 
-      // 2. 바늘이 완벽히 가리키도록 정밀 각도 계산
-      // 바늘은 12시 방향(즉, -Math.PI / 2 라디안 위치)에 고정되어 있음.
       const segmentAngle = (2 * Math.PI) / numSegments;
       const targetSegmentCenter = (winnerIndex + 0.5) * segmentAngle;
       
-      // 12시 방향에 조각 중심이 오도록 하는 목표 회전각 구하기
       const baseStopAngle = (1.5 * Math.PI) - targetSegmentCenter;
-
-      // 최소 5바퀴(10*PI) 이상 회전 후 멈추게 함
       const extraSpins = 6 * 2 * Math.PI; 
       const finalAngle = baseStopAngle + extraSpins;
 
-      // 애니메이션 변수 설정
       let startTimestamp = null;
-      const duration = 4500; // 4.5초 동안 회전
-      const initialAngle = currentAngle % (2 * Math.PI); // 각도 오버플로우 방지
+      const duration = 4500; 
+      const initialAngle = currentAngle % (2 * Math.PI); 
 
       isSpinning = true;
       document.getElementById('spinBtn').disabled = true;
@@ -835,7 +897,6 @@
         const progress = timestamp - startTimestamp;
         const percent = Math.min(progress / duration, 1);
 
-        // Ease-out Cubic 감속 곡선 적용 (부드럽게 멈춤)
         const easeOut = 1 - Math.pow(1 - percent, 3);
         currentAngle = initialAngle + easeOut * (finalAngle - initialAngle);
 
@@ -844,27 +905,31 @@
         if (percent < 1) {
           requestAnimationFrame(animate);
         } else {
-          // 정지 완료
           isSpinning = false;
           document.getElementById('spinBtn').disabled = false;
           
-          // 최종 결과 매칭 보정
           currentAngle = baseStopAngle;
           drawRouletteWheel();
 
-          showWinner(winnerName);
+          // 최종 당첨자 정보를 Firebase에 기록하여 공유자 전원에게 팝업 전파
+          set(ref(db, 'winnerResult'), {
+            name: winnerName,
+            totalPay: totalAmountPay,
+            showPopup: true,
+            timestamp: Date.now()
+          });
         }
       }
-
       requestAnimationFrame(animate);
     }
 
-    // --- 7. 당첨자 발표 및 폭죽 이펙트 ---
-    function showWinner(name) {
+
+    // --- 당첨 팝업 및 폭죽 효과 ---
+
+    function showWinner(name, totalPay) {
       document.getElementById('winnerNameDisplay').textContent = name;
-      document.getElementById('winnerTotalPay').textContent = `결제할 총 금액: ${window.totalAmountPay.toLocaleString()}원`;
+      document.getElementById('winnerTotalPay').textContent = `결제할 총 금액: ${totalPay.toLocaleString()}원`;
       document.getElementById('winnerModal').style.display = 'flex';
-      
       startConfetti();
     }
 
@@ -873,7 +938,9 @@
       stopConfetti();
     }
 
-    // --- 8. 폭죽(Confetti) 효과 스크립트 ---
+
+    // --- 폭죽(Confetti) 라이브러리 코드 ---
+
     const confettiCanvas = document.getElementById('confettiCanvas');
     const confettiCtx = confettiCanvas.getContext('2d');
     let confettiActive = false;
@@ -940,6 +1007,22 @@
       });
       requestAnimationFrame(animateConfetti);
     }
+
+    // --- HTML 엘리먼트 onclick 연동을 위한 전역 스코프 바인딩 ---
+    window.toggleAdminPanel = toggleAdminPanel;
+    window.addNewMenu = addNewMenu;
+    window.updateMenuName = updateMenuName;
+    window.updateMenuPrice = updateMenuPrice;
+    window.deleteMenu = deleteMenu;
+    window.setDeadline = setDeadline;
+    window.submitOrder = submitOrder;
+    window.startEditOrder = startEditOrder;
+    window.cancelEdit = cancelEdit;
+    window.deleteOrder = deleteOrder;
+    window.resetAllData = resetAllData;
+    window.startRoulette = startRoulette;
+    window.closeWinnerModal = closeWinnerModal;
+
   </script>
 </body>
 </html>
